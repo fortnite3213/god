@@ -1,94 +1,108 @@
-import requests
+import json
 import random
+import requests
 from flask import Flask, jsonify, request
 
 app = Flask(__name__)
-title = "990E8"
-secretkey = "HK94NXO5UEEAX8X9UXHX4HWY4IYH9CY75HBAMOKOK9Z5YUCQYG"
-applab = "OC|8745077415616900|f9853ee6f8e5bc409b6d8261e06e5303"
 
-def auth():
-    return {"content-type": "application/json","X-SecretKey": secretkey}
+titleider = "990E8"
+secretkey = "HK94NXO5UEEAX8X9UXHX4HWY4IYH9CY75HBAMOKOK9Z5YUCQYG"
+ApiKey = "OC|8745077415616900|f9853ee6f8e5bc409b6d8261e06e5303"
+def GetAuthHeaders() -> dict:
+    return {"Content-Type": "application/json", "X-SecretKey": secretkey}
 
 @app.route("/api/PlayFabAuthentication", methods=["POST"])
 def playfab_authentication():
-    rjson = request.get_json()
-    required_fields = ["CustomId", "Nonce", "AppId", "Platform", "OculusId"]
-    missing_fields = [field for field in required_fields if not rjson.get(field)]
-
-    if missing_fields:
-        return jsonify({
-            "Message": f"Missing parameter(s): {', '.join(missing_fields)}",
-            "Error": f"BadRequest-No{missing_fields[0]}"
-        }), 400
-
-    if rjson.get("AppId") != settings.TitleId:
-        return jsonify({
-            "Message": "Request sent for the wrong App ID",
-            "Error": "BadRequest-AppIdMismatch"
-        }), 400
-
-    if not rjson.get("CustomId").startswith(("OC", "PI")):
-        return jsonify({
-            "Message": "Bad request",
-            "Error": "BadRequest-NoOCorPIPrefix"
-        }), 400
-
-    url = f"https://{settings.title}.playfabapi.com/Server/LoginWithServerCustomId"
-    login_request = requests.post(
-        url=url,
-        json={
-            "ServerCustomId": rjson.get("CustomId"),
-            "CreateAccount": True
-        },
-        headers=settings.get_auth_headers()
+    login_req = requests.post(
+        url=f"https://{titleider}.playfabapi.com/Server/LoginWithServerCustomId",
+        json={"ServerCustomId": "OCULUS" + request.json.get('oculus_id', ''), "CreateAccount": True},
+        headers=GetAuthHeaders()
     )
 
-    if login_request.status_code == 200:
-        data = login_request.json().get("data")
-        session_ticket = data.get("SessionTicket")
-        entity_token = data.get("EntityToken").get("EntityToken")
-        playfab_id = data.get("PlayFabId")
-        entity_type = data.get("EntityToken").get("Entity").get("Type")
-        entity_id = data.get("EntityToken").get("Entity").get("Id")
+    if login_req.status_code == 200:
+        rjson = login_req.json()
+        session_ticket = rjson.get('data').get('SessionTicket')
+        entity_token = rjson.get('data').get('EntityToken').get('EntityToken')
+        playfab_id = rjson.get('data').get('PlayFabId')
+        entity_id = rjson.get('data').get('EntityToken').get('Entity').get('Id')
+        entity_type = rjson.get('data').get('EntityToken').get('Entity').get('Type')
 
-        link_response = requests.post(
-            url=f"https://{settings.title}.playfabapi.com/Server/LinkServerCustomId",
-            json={
-                "ForceLink": True,
-                "PlayFabId": playfab_id,
-                "ServerCustomId": rjson.get("CustomId"),
-            },
-            headers=settings.get_auth_headers()
-        ).json()
+        try:
+            requests.post(
+                f"https://{titleider}.playfabapi.com/Client/LinkCustomID",
+                json={"CustomId": request.json.get('oculus_id', ''), "ForceLink": True},
+                headers={"Content-Type": "application/json", "X-Authorization": session_ticket}
+            )
+        except requests.exceptions.RequestException as e:
+            app.logger.error(f"Failed to link Oculus ID {request.json.get('oculus_id', '')} for PlayFabId {playfab_id}: {str(e)}")
 
         return jsonify({
-            "PlayFabId": playfab_id,
             "SessionTicket": session_ticket,
             "EntityToken": entity_token,
+            "PlayFabId": playfab_id,
             "EntityId": entity_id,
             "EntityType": entity_type
         }), 200
-    else:
-        error_details = login_request.json().get('errorDetails')
-        first_error = next(iter(error_details))
-        return jsonify({
-            "ErrorMessage": str(first_error),
-            "ErrorDetails": error_details[first_error]
-        }), login_request.status_code
+    else: 
+        ban_info = login_req.json()
+        if ban_info.get("errorCode") == 1002:
+            ban_message = ban_info.get("errorMessage", "No ban message provided.")
+            ban_details = ban_info.get("errorDetails", {})
+            ban_expiration_key = next(iter(ban_details.keys()), None)
+            ban_expiration_list = ban_details.get(ban_expiration_key, [])
+            ban_expiration = (
+                ban_expiration_list[0]
+                if len(ban_expiration_list) > 0
+                else "Indefinite"
+            )
+
+            return jsonify({
+                "BanMessage": ban_expiration_key,
+                "BanExpirationTime": ban_expiration,
+            }), 403     
 
 @app.route("/api/CachePlayFabId", methods=["POST"])
-def somethingelsetodolol():
-    getjson = request.get_json()
-    playfab_cache[getjson.get("PlayFabId")] = getjson
-    return jsonify({"Message": "Success"}), 200
+def cacheplayfabid():
+    idfk = request.get_json()
+    playfabid = idfk.get("SessionTicket").split("-")[0] if "SessionTicket" in idfk else None
+    if playfabid is None:
+        return jsonify({"Message": "Try Again Later."}), 404
+    return jsonify({"Message": "Authed", "PlayFabId": playfabid}), 200
+
+@app.route("/", methods=["POST", "GET"])
+def Rizz():
+    return "backend good"
 
 @app.route("/api/TitleData", methods=["POST", "GET"])
 def title_data():
-    response = requests.post(url=f"https://{title}.playfabapi.com/Server/GetTitleData", headers=auth())
+    response = requests.post(
+        url=f"https://{titleider}.playfabapi.com/Server/GetTitleData",
+        headers=settings.get_auth_headers()
+    )
+
     if response.status_code == 200:
         return jsonify(response.json().get("data").get("Data"))
-    else:return jsonify({}), response.status_code
+    else:
+        return jsonify({}), response.status_code
+
+
+@app.route("/api/ConsumeOculusIAP", methods=["POST"])
+def consume_oculus_iap():
+    rjson = request.get_json()
+    access_token = rjson.get("userToken")
+    user_id = rjson.get("userID")
+    nonce = rjson.get("nonce")
+    sku = rjson.get("sku")
+
+    response = requests.post(
+        url=f"https://graph.oculus.com/consume_entitlement?nonce={nonce}&user_id={user_id}&sku={sku}&access_token={ApiKey}",
+        headers={"content-type": "application/json"}
+    )
+
+    if response.json().get("success"):
+        return jsonify({"result": True})
+    else:
+        return jsonify({"error": True})
 
 @app.route("/api/photon", methods=["POST"])
 def photonauth():
@@ -97,156 +111,25 @@ def photonauth():
     Ticket = getjson.get("Ticket")
     Nonce = getjson.get("Nonce")
     Platform = getjson.get("Platform")
-    UserId = getjson.get("UserId")
-    nickName = getjson.get("username")
-    if request.method.upper() == "GET":
-        rjson = request.get_json()
-        print(f"{request.method} : {rjson}")
-
-        userId = Ticket.split('-')[0] if Ticket else None
-        print(f"Extracted userId: {UserId}")
-
-        if userId is None or len(userId) != 16:
-            print("Invalid userId")
-            return jsonify({
-                'resultCode': 2,
-                'message': 'Invalid token',
-                'userId': None,
-                'nickname': None
-            })
-
-        if Platform != 'Quest':
-            return jsonify({'Error': 'Bad request', 'Message': 'Invalid platform!'}),403
-
-        if Nonce is None:
-            return jsonify({'Error': 'Bad request', 'Message': 'Not Authenticated!'}),304
-
-        req = requests.post(
-            url=f"https://{settings.title}.playfabapi.com/Server/GetUserAccountInfo",
-            json={"PlayFabId": userId},
-            headers={
-                "content-type": "application/json",
-                "X-SecretKey": secretkey
-            })
-
-        print(f"Request to PlayFab returned status code: {req.status_code}")
-
-        if req.status_code == 200:
-            nickName = req.json().get("UserInfo",
-                                      {}).get("UserAccountInfo",
-                                              {}).get("Username")
-            if not nickName:
-                nickName = None
-
-            print(
-                f"Authenticated user {userId.lower()} with nickname: {nickName}"
-            )
-
-            return jsonify({
-                'resultCode': 1,
-                'message':
-                f'Authenticated user {userId.lower()} title {settings.TitleId.lower()}',
-                'userId': f'{userId.upper()}',
-                'nickname': nickName
-            })
-        else:
-            print("Failed to get user account info from PlayFab")
-            return jsonify({
-                'resultCode': 0,
-                'message': "Something went wrong",
-                'userId': None,
-                'nickname': None
-            })
-
-    elif request.method.upper() == "POST":
-        rjson = request.get_json()
-        print(f"{request.method} : {rjson}")
-
-        ticket = rjson.get("Ticket")
-        userId = ticket.split('-')[0] if ticket else None
-        print(f"Extracted userId: {userId}")
-
-        if userId is None or len(userId) != 16:
-            print("Invalid userId")
-            return jsonify({
-                'resultCode': 2,
-                'message': 'Invalid token',
-                'userId': None,
-                'nickname': None
-            })
-
-        req = requests.post(
-             url=f"https://{settings.TitleId}.playfabapi.com/Server/GetUserAccountInfo",
-             json={"PlayFabId": userId},
-             headers={
-                 "content-type": "application/json",
-                 "X-SecretKey": settings.SecretKey
-             })
-
-        print(f"Authenticated user {userId.lower()}")
-        print(f"Request to PlayFab returned status code: {req.status_code}")
-
-        if req.status_code == 200:
-             nickName = req.json().get("UserInfo",
-                                       {}).get("UserAccountInfo",
-                                               {}).get("Username")
-             if not nickName:
-                 nickName = None
-             return jsonify({
-                 'resultCode': 1,
-                 'message':
-                 f'Authenticated user {userId.lower()} title {settings.TitleId.lower()}',
-                 'userId': f'{userId.upper()}',
-                 'nickname': nickName
-             })
-        else:
-             print("Failed to get user account info from PlayFab")
-             successJson = {
-                 'resultCode': 0,
-                 'message': "Something went wrong",
-                 'userId': None,
-                 'nickname': None
-             }
-             authPostData = {}
-             for key, value in authPostData.items():
-                 successJson[key] = value
-             print(f"Returning successJson: {successJson}")
-             return jsonify(successJson)
-    else:
-         print(f"Invalid method: {request.method.upper()}")
-         return jsonify({
-             "Message":
-             "Use a POST or GET Method instead of " + request.method.upper()
-         })
-
-
-def ReturnFunctionJson(data, funcname, funcparam={}):
-    print(f"Calling function: {funcname} with parameters: {funcparam}")
-    rjson = data.get("FunctionParameter", {})
-    userId = rjson.get("CallerEntityProfile",
-                       {}).get("Lineage", {}).get("TitlePlayerAccountId")
-
-    print(f"UserId: {userId}")
-
+    if Ticket is None or len(Ticket.split('-')[0]) != 16:
+        return jsonify({'resultCode': 2, 'message': 'Invalid token', 'userId': None, 'nickname': None}), 403
+        
     req = requests.post(
-        url=f"https://{settings.title}.playfabapi.com/Server/ExecuteCloudScript",
-        json={
-            "PlayFabId": userId,
-            "FunctionName": funcname,
-            "FunctionParameter": funcparam
-        },
-        headers={
-            "content-type": "application/json",
-            "X-SecretKey": secretkey
-        })
+        url=f"https://{titleider}.playfabapi.com/Server/GetUserAccountInfo",
+        json={"PlayFabId": Ticket.split('-')[0]},
+        headers={"content-type": "application/json", "X-SecretKey": secretkey}
+    )
 
     if req.status_code == 200:
-        result = req.json().get("data", {}).get("FunctionResult", {})
-        print(f"Function result: {result}")
-        return jsonify(result), req.status_code
+        nickName = req.json().get("UserInfo", {}).get("UserAccountInfo", {}).get("Username")
+        return jsonify({
+            'resultCode': 1,
+            'message': 'Authenticated',
+            'userId': Ticket.split('-')[0],
+            'nickname': nickName
+        })
     else:
-        print(f"Function execution failed, status code: {req.status_code}")
-        return jsonify({}), req.status_code
+        return jsonify({"resultCode": 0, "message": "Something went wrong"}), 500
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    app.run(debug=True)
